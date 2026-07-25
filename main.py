@@ -32,9 +32,10 @@ class NumPyRNN:
         self.output_dim = output_dim
         self.learning_rate = learning_rate
 
-        self.Wxh = np.random.randn(input_dim, hidden_dim) 
-        self.Whh = np.random.randn(hidden_dim, hidden_dim)
-        self.Wyh = np.random.randn(hidden_dim, output_dim)
+        scale = 0.01
+        self.Wxh = np.random.randn(input_dim, hidden_dim) * scale
+        self.Whh = np.random.randn(hidden_dim, hidden_dim) * scale
+        self.Wyh = np.random.randn(hidden_dim, output_dim) * scale
 
         self.bh = np.zeros(hidden_dim)
         self.by = np.zeros(output_dim)
@@ -47,10 +48,10 @@ class NumPyRNN:
         window_length = X.shape[1]
 
         hs = {}
-        hs[-1] = np.zeros(shape=(self.hidden_dim, batch_size))
+        hs[-1] = np.zeros(shape=(batch_size, self.hidden_dim))
 
         for i in range(window_length):
-            h = np.tanh(self.Wxh @ X[:,i] + self.Whh @ hs[i-1] + self.bh[:, np.newaxis])
+            h = np.tanh(X[:,i] @ self.Wxh + hs[i-1] @ self.Whh + self.bh)
             hs[i] = h
         
         logits = hs[window_length - 1] @ self.Wyh + self.by
@@ -112,8 +113,8 @@ def load_dataset():
 
     print(dataset.head())
 
-    train_dataset = dataset[(dataset['user']) <= 25]
-    test_dataset = dataset[dataset['user'] > 25]
+    train_dataset = dataset[(dataset['user']) <= 25].copy()
+    test_dataset = dataset[dataset['user'] > 25].copy()
 
     train_features = train_dataset[['x', 'y', 'z']].values
     test_features = test_dataset[['x', 'y', 'z']].values
