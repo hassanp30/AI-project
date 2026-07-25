@@ -6,6 +6,16 @@ from collections import Counter
 
 FILE_PATH = Path(__file__).resolve().parent
 
+ACTIVITY_MAP = {
+    'Walking': 0,
+    'Jogging': 1,
+    'Upstairs': 2,
+    'Downstairs': 3,
+    'Sitting': 4,
+    'Standing': 5
+    }
+INT_TO_ACTIVITY = {v: k for k, v in ACTIVITY_MAP.items()}
+
 
 
 def softmax(x):
@@ -47,10 +57,10 @@ class NumPyRNN:
         probs = softmax(logits)
         return probs, (X, hs, probs)
             
-    def backward(self, Y_true, probs, hs):
+    # def backward(self, Y_true, probs, hs):
 
     
-    def update_params(self, gradients): 
+    # def update_params(self, gradients): 
 
 
 
@@ -97,6 +107,10 @@ def load_dataset():
         }
     )
     # print(type(dataset))
+
+    dataset['activity'] = dataset['activity'].map(ACTIVITY_MAP)
+
+    print(dataset.head())
 
     train_dataset = dataset[(dataset['user']) <= 25]
     test_dataset = dataset[dataset['user'] > 25]
