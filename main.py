@@ -1,10 +1,14 @@
+from numpy import gradient
 import numpy as np
 import pandas as pd
 from pathlib import Path
 from collections import Counter
 
-
-FILE_PATH = Path(__file__).resolve().parent
+np.random.seed(42)
+try:
+    FILE_PATH = Path(__file__).resolve().parent
+except NameError:
+    FILE_PATH = Path.cwd()
 
 ACTIVITY_MAP = {
     'Walking': 0,
@@ -51,17 +55,71 @@ class NumPyRNN:
         hs[-1] = np.zeros(shape=(batch_size, self.hidden_dim))
 
         for i in range(window_length):
-            h = np.tanh(X[:,i] @ self.Wxh + hs[i-1] @ self.Whh + self.bh)
+            h = np.tanh(X[:,i] @ self.Wxh + hs[i-1] @ self.Whh + self.bh)   # dim: (batch_size, hidden_dim)
             hs[i] = h
         
         logits = hs[window_length - 1] @ self.Wyh + self.by
         probs = softmax(logits)
         return probs, (X, hs, probs)
-            
-    # def backward(self, Y_true, probs, hs):
+
+    @staticmethod
+    def cross_entropy_loss(probs, y_true):
+        epsilon = 1e-12        
+        n = probs.shape[0]
+        correct_probs = probs[np.arange(n), y_true]
+        loss = -np.mean(np.log(correct_probs + epsilon))
+        return loss
+
+
+    def backward(self, y_true, cache):
+        X, hs, probs = cache
+        
+        num_sample = X.shape[0]
+        window_length = X.shape[1]
+        
+        dlogits = probs.copy()
+        dlogits[np.arange(num_sample), y_true] -= 1
+        dlogits /= num_sample
+
+        h_final = hs[window_length - 1]
+        dWyh = h_final.T @ dlogits
+        dby = np.sum(dlogits, axis = 0)
+        dh_next = dlogits @ self.Wyh.T
+
+        dWxh = np.zeros_like(self.Wxh)
+        dWhh = np.zeros_like(self.Whh)
+        dbh = np.zeros_like(self.bh)
+
+        for t in reversed(range(window_length)):
+            dtanh = (1 - hs[t] ** 2) * dh_next
+            dbh += np.sum(dtanh, axis = 0)
+            dWxh +=  X[:,t].T @ dtanh
+            dWhh += hs[t-1].T @ dtanh
+            dh_next =  dtanh @ self.Whh.T
+
+        gradients = {
+            "dWxh": dWxh,
+            "dWhh": dWhh,
+            "dWyh": dWyh,
+            "dby": dby,
+            "dbh": dbh
+        }
+
+        return gradients
+        
+
 
     
-    # def update_params(self, gradients): 
+    def update_params(self, gradients, max_grad_norm):
+        for key in gradients:
+            gradients[key] = np.clip(gradients[key], -max_grad_norm, max_grad_norm)
+
+        self.Whh -= self.learning_rate * gradients["dWhh"]
+        self.Wxh -= self.learning_rate * gradients["dWxh"]
+        self.Wyh -= self.learning_rate * gradients["dWyh"]
+        self.bh -= self.learning_rate * gradients["dbh"]
+        self.by -= self.learning_rate * gradients["dby"]
+        
 
 
 
@@ -97,6 +155,7 @@ def load_dataset():
     """
     returns dataset, train_dataset, test_dataset as pandas DataFrame
     """
+
     dataset_path = FILE_PATH / "dataset" / "WISDM_ar_v1.1_cleaned.csv"
     dataset = pd.read_csv(dataset_path,
         dtype={
@@ -109,9 +168,10 @@ def load_dataset():
     )
     # print(type(dataset))
 
+    # mapping activities to integers
     dataset['activity'] = dataset['activity'].map(ACTIVITY_MAP)
 
-    print(dataset.head())
+    # print(dataset.head())
 
     train_dataset = dataset[(dataset['user']) <= 25].copy()
     test_dataset = dataset[dataset['user'] > 25].copy()
@@ -139,9 +199,10 @@ def main():
     # windowing the dataset 
     X_train, y_train = create_windows(train_dataset)
     X_test, y_test = create_windows(test_dataset)
+    print(X_train.shape)
     
 
-
+    
     
 
 if __name__ == "__main__":
