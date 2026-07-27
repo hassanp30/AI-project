@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import f1_score, accuracy_score, confusion_matrix
 from torch.utils.data import TensorDataset, DataLoader
+from scipy import stats
 
 np.random.seed(42)
 try:
@@ -33,38 +34,34 @@ def softmax(x):
 
 
 class NumPyRNN:
+
     def __init__(self, input_dim, hidden_dim, output_dim, learning_rate=0.01):
-        self.learning_rate = learning_rate
-        self.input_dim = input_dim
+        self.lr = learning_rate
         self.hidden_dim = hidden_dim
-        self.output_dim = output_dim
-        self.learning_rate = learning_rate
 
         scale = 0.01
         self.Wxh = np.random.randn(input_dim, hidden_dim) * scale
         self.Whh = np.random.randn(hidden_dim, hidden_dim) * scale
         self.Wyh = np.random.randn(hidden_dim, output_dim) * scale
 
-        self.bh = np.zeros(hidden_dim)
-        self.by = np.zeros(output_dim)
+        self.bh = np.zeros((1, hidden_dim))
+        self.by = np.zeros((1, output_dim))
 
     def forward(self, X):
+        batch_size, window_length, _ = X.shape
 
-        batch_size = X.shape[0]
-        window_length = X.shape[1]
+        hs = np.zeros((batch_size, window_length + 1, self.hidden_dim))
 
-        hs = {}
-        hs[-1] = np.zeros(shape=(batch_size, self.hidden_dim))
+        for t in range(window_length):
+            net_input = X[:, t, :] @ self.Wxh + hs[:, t - 1, :] @ self.Whh + self.bh
+            hs[:, t, :] = np.tanh(net_input)
 
-        for i in range(window_length):
-            h = np.tanh(
-                X[:, i] @ self.Wxh + hs[i - 1] @ self.Whh + self.bh
-            )  # dim: (batch_size, hidden_dim)
-            hs[i] = h
-
-        logits = hs[window_length - 1] @ self.Wyh + self.by
+        last_hidden = hs[:, window_length - 1, :]
+        logits = last_hidden @ self.Wyh + self.by
         probs = softmax(logits)
-        return probs, (X, hs, probs)
+
+        cache = (X, hs, probs)
+        return probs, cache
 
     @staticmethod
     def cross_entropy_loss(probs, y_true):
@@ -76,72 +73,62 @@ class NumPyRNN:
 
     def backward(self, y_true, cache):
         X, hs, probs = cache
-
-        num_sample = X.shape[0]
-        window_length = X.shape[1]
+        batch_size, window_length, _ = X.shape
 
         dlogits = probs.copy()
-        dlogits[np.arange(num_sample), y_true] -= 1
-        dlogits /= num_sample
+        dlogits[np.arange(batch_size), y_true] -= 1
+        dlogits /= batch_size
 
-        h_final = hs[window_length - 1]
-        dWyh = h_final.T @ dlogits
-        dby = np.sum(dlogits, axis=0)
-        dh_next = dlogits @ self.Wyh.T
+        last_hidden = hs[:, window_length - 1, :]
+        dWyh = last_hidden.T @ dlogits
+        dby = np.sum(dlogits, axis=0, keepdims=True)
 
         dWxh = np.zeros_like(self.Wxh)
         dWhh = np.zeros_like(self.Whh)
         dbh = np.zeros_like(self.bh)
 
+        dh_next = dlogits @ self.Wyh.T
+
         for t in reversed(range(window_length)):
-            dtanh = (1 - hs[t] ** 2) * dh_next
-            dbh += np.sum(dtanh, axis=0)
-            dWxh += X[:, t].T @ dtanh
-            dWhh += hs[t - 1].T @ dtanh
+            dtanh = (1 - hs[:, t, :] ** 2) * dh_next
+
+            dWxh += X[:, t, :].T @ dtanh
+            dWhh += hs[:, t - 1, :].T @ dtanh
+            dbh += np.sum(dtanh, axis=0, keepdims=True)
+
             dh_next = dtanh @ self.Whh.T
 
-        gradients = {"dWxh": dWxh, "dWhh": dWhh, "dWyh": dWyh, "dby": dby, "dbh": dbh}
+        return {"dWxh": dWxh, "dWhh": dWhh, "dWyh": dWyh, "dbh": dbh, "dby": dby}
 
-        return gradients
+    def update_params(self, grads, max_grad_norm=5.0):
+        for key in grads:
+            grads[key] = np.clip(grads[key], -max_grad_norm, max_grad_norm)
 
-    def update_params(self, gradients, max_grad_norm):
-        for key in gradients:
-            gradients[key] = np.clip(gradients[key], -max_grad_norm, max_grad_norm)
-
-        self.Whh -= self.learning_rate * gradients["dWhh"]
-        self.Wxh -= self.learning_rate * gradients["dWxh"]
-        self.Wyh -= self.learning_rate * gradients["dWyh"]
-        self.bh -= self.learning_rate * gradients["dbh"]
-        self.by -= self.learning_rate * gradients["dby"]
+        self.Wxh -= self.lr * grads["dWxh"]
+        self.Whh -= self.lr * grads["dWhh"]
+        self.Wyh -= self.lr * grads["dWyh"]
+        self.bh -= self.lr * grads["dbh"]
+        self.by -= self.lr * grads["dby"]
 
 
 def create_windows(data, window_size=200, step_size=100):
-    """
-    creates windows for the dataset.
-    returns X and Y as np arrays.
-    """
-    X_all = []
-    Y_all = []
-    for _, group in data.groupby("user"):
-        X_labels = []
-        Y_labels = []
 
+    X_list = []
+    Y_list = []
+
+    for _, group in data.groupby("user"):
         features = group[["x", "y", "z"]].values
         activities = group["activity"].values
+
         for i in range(0, len(group) - window_size + 1, step_size):
-            dominant_label = Counter(activities[i : i + window_size]).most_common(1)[0][
-                0
-            ]
-            X_labels.append(features[i : i + window_size])
-            Y_labels.append(dominant_label)
 
-        if len(X_labels) > 0:
-            X_all.append(np.array(X_labels))
-            Y_all.append(np.array(Y_labels))
+            X_list.append(features[i : i + window_size])
 
-    X = np.concatenate(X_all, axis=0)
-    Y = np.concatenate(Y_all, axis=0)
-    return X, Y
+            window_labels = activities[i : i + window_size]
+            dominant_label = stats.mode(window_labels, keepdims=False)[0]
+            Y_list.append(dominant_label)
+
+    return np.array(X_list), np.array(Y_list)
 
 
 def load_dataset():
@@ -151,12 +138,11 @@ def load_dataset():
         dataset_path,
         dtype={"user": int, "timestamp": float, "x": float, "y": float, "z": float},
     )
-    print("Dataset Type: " + str(type(dataset)))
+    # print("Dataset Type: " + str(type(dataset)))
 
-    # mapping activities to integers
     dataset["activity"] = dataset["activity"].map(ACTIVITY_MAP)
 
-    print("Dataset Head: " + str(dataset.head()))
+    # print("Dataset Head: " + str(dataset.head()))
 
     train_dataset = dataset[(dataset["user"]) <= 25].copy()
     test_dataset = dataset[dataset["user"] > 25].copy()
@@ -164,9 +150,8 @@ def load_dataset():
     train_features = train_dataset[["x", "y", "z"]].values
     test_features = test_dataset[["x", "y", "z"]].values
 
-    print("Train Features:\n" + str(train_features[0:10]))
+    # print("Train Features:\n" + str(train_features[0:10]))
 
-    # standardizing the data
     mean = np.mean(train_features, axis=0)
     std = np.std(train_features, axis=0) + 1e-8  # 1e-8 prevents division by zero
 
@@ -221,16 +206,16 @@ def local_Numpy_vs_nnRnn_check(
     pytorch_rnn = nn.RNN(input_size=input_dim, hidden_size=hidden_dim, batch_first=True)
 
     with torch.no_grad():
-        pytorch_rnn.weight_ih_l0.copy_(torch.from_numpy(numpy_model.Wxh.T))
-        pytorch_rnn.weight_hh_l0.copy_(torch.from_numpy(numpy_model.Whh.T))
-        pytorch_rnn.bias_ih_l0.copy_(torch.from_numpy(numpy_model.bh))
+        pytorch_rnn.weight_ih_l0.copy_(torch.from_numpy(numpy_model.Wxh.T).float())
+        pytorch_rnn.weight_hh_l0.copy_(torch.from_numpy(numpy_model.Whh.T).float())
+        pytorch_rnn.bias_ih_l0.copy_(torch.from_numpy(numpy_model.bh.squeeze()).float())
         pytorch_rnn.bias_hh_l0.zero_()
 
     X_test_np = np.random.randn(batch_size, window_len, input_dim)
     X_test_torch = torch.from_numpy(X_test_np).float()
 
     _, cache = numpy_model.forward(X_test_np)
-    out_numpy = cache[1][window_len - 1]
+    out_numpy = cache[1][:, window_len - 1, :]
 
     out_torch, _ = pytorch_rnn(X_test_torch)
     out_torch_last = out_torch[:, -1, :].detach().numpy()
@@ -243,7 +228,7 @@ def local_Numpy_vs_nnRnn_check(
         print("❌ Warning! Significant difference detected between outputs.")
 
 
-class PyTorchSimpleRNN(nn.Module):
+class PyTorchSimpleRNN_Simple(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim):
         super().__init__()
         self.rnn = nn.RNN(input_dim, hidden_dim, batch_first=True)
@@ -251,11 +236,12 @@ class PyTorchSimpleRNN(nn.Module):
 
     def forward(self, x):
         out, _ = self.rnn(x)
-        last_out = out[:, -1, :]
-        return self.fc(last_out)
+        last_step_out = out[:, -1, :]
+        return self.fc(last_step_out)
 
 
 class PyTorchLSTM(nn.Module):
+
     def __init__(self, input_dim, hidden_dim, output_dim):
         super().__init__()
         self.lstm = nn.LSTM(input_dim, hidden_dim, batch_first=True)
@@ -263,11 +249,12 @@ class PyTorchLSTM(nn.Module):
 
     def forward(self, x):
         out, _ = self.lstm(x)
-        last_out = out[:, -1, :]
-        return self.fc(last_out)
+        last_step_out = out[:, -1, :]
+        return self.fc(last_step_out)
 
 
 class PyTorchBiLSTM(nn.Module):
+
     def __init__(self, input_dim, hidden_dim, output_dim):
         super().__init__()
         self.lstm = nn.LSTM(input_dim, hidden_dim, batch_first=True, bidirectional=True)
@@ -275,19 +262,16 @@ class PyTorchBiLSTM(nn.Module):
 
     def forward(self, x):
         out, _ = self.lstm(x)
-        last_out = out[:, -1, :]
-        return self.fc(last_out)
+        last_step_out = out[:, -1, :]
+        return self.fc(last_step_out)
 
 
 def evaluate_and_report(y_true, y_pred, model_name="Model"):
 
-    # 1. Calculate overall accuracy
     acc = accuracy_score(y_true, y_pred)
 
-    # 2. Calculate macro-F1 (unweighted mean of F1 for all classes)
     macro_f1 = f1_score(y_true, y_pred, average="macro")
 
-    # 3. Calculate per-class F1 to see where the model performs poorly
     class_f1 = f1_score(y_true, y_pred, average=None)
 
     print(f"\n--- Evaluation Results for {model_name} ---")
@@ -306,7 +290,6 @@ def evaluate_and_report(y_true, y_pred, model_name="Model"):
     for name, f1 in zip(activity_names, class_f1):
         print(f"  {name}: {f1:.4f}")
 
-    # 4. Generate and plot Confusion Matrix
     cm = confusion_matrix(y_true, y_pred)
 
     plt.figure(figsize=(8, 6))
@@ -444,22 +427,18 @@ def train_pytorch_model(
 
 
 def main():
-    # Load the dataset
     dataset, train_dataset, test_dataset = load_dataset()
 
-    # Create overlapping windows for training and testing sets
     X_train, y_train = create_windows(train_dataset)
     X_test, y_test = create_windows(test_dataset)
-    print("X_train shape:", X_train.shape)
-    print("y_train shape:", y_train.shape)
+    # print("X_train shape:", X_train.shape)
+    # print("y_train shape:", y_train.shape)
 
-    # Define hyper-parameters for our test models
-    input_dim = X_train.shape[2]  # 3 features (x, y, z acceleration)
-    hidden_dim = 32  # Small hidden size for fast testing
-    output_dim = 6  # 6 human activity classes
+    input_dim = X_train.shape[2]
+    hidden_dim = 32
+    output_dim = 6
     learning_rate = 0.01
 
-    # Initialize the custom NumPy RNN model
     numpy_model = NumPyRNN(
         input_dim, hidden_dim, output_dim, learning_rate=learning_rate
     )
