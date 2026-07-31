@@ -257,11 +257,28 @@ class PyTorchBiLSTM(nn.Module):
 
     def __init__(self, input_dim, hidden_dim, output_dim):
         super().__init__()
+        self.hidden_dim = hidden_dim
         self.lstm = nn.LSTM(input_dim, hidden_dim, batch_first=True, bidirectional=True)
         self.fc = nn.Linear(hidden_dim * 2, output_dim)
 
     def forward(self, x):
         out, _ = self.lstm(x)
+        # Correctly concatenate last forward state (at t=-1) and last backward state (at t=0)
+        forward_last = out[:, -1, :self.hidden_dim]
+        backward_last = out[:, 0, self.hidden_dim:]
+        last_step_out = torch.cat((forward_last, backward_last), dim=1)
+        return self.fc(last_step_out)
+
+
+class PyTorchGRU(nn.Module):
+
+    def __init__(self, input_dim, hidden_dim, output_dim):
+        super().__init__()
+        self.gru = nn.GRU(input_dim, hidden_dim, batch_first=True)
+        self.fc = nn.Linear(hidden_dim, output_dim)
+
+    def forward(self, x):
+        out, _ = self.gru(x)
         last_step_out = out[:, -1, :]
         return self.fc(last_step_out)
 
@@ -487,6 +504,18 @@ def main():
         model_name="PyTorch BiLSTM",
     )
 
+    # GRU training and testing (Bonus)
+    gru_model = PyTorchGRU(input_dim, hidden_dim, output_dim)
+    time_gru, acc_gru, f1_gru = train_pytorch_model(
+        gru_model,
+        X_train,
+        y_train,
+        X_test,
+        y_test,
+        epochs=15,
+        model_name="PyTorch GRU (Bonus)",
+    )
+
     print("\n" + "=" * 70)
     print("=" * 70)
     print(
@@ -497,6 +526,9 @@ def main():
     )
     print(
         f"3. PyTorch BiLSTM   : Time = {time_bilstm:.2f}s | Accuracy = {acc_bilstm*100:.2f}% | Macro-F1 = {f1_bilstm:.4f}"
+    )
+    print(
+        f"4. PyTorch GRU      : Time = {time_gru:.2f}s | Accuracy = {acc_gru*100:.2f}% | Macro-F1 = {f1_gru:.4f}"
     )
     print("=" * 70)
 
