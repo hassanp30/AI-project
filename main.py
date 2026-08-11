@@ -153,7 +153,7 @@ def load_dataset():
     # print("Train Features:\n" + str(train_features[0:10]))
 
     mean = np.mean(train_features, axis=0)
-    std = np.std(train_features, axis=0) + 1e-8  # 1e-8 prevents division by zero
+    std = np.std(train_features, axis=0) + 1e-8
 
     train_dataset[["x", "y", "z"]] = (train_features - mean) / std
 
@@ -263,9 +263,8 @@ class PyTorchBiLSTM(nn.Module):
 
     def forward(self, x):
         out, _ = self.lstm(x)
-        # Correctly concatenate last forward state (at t=-1) and last backward state (at t=0)
-        forward_last = out[:, -1, :self.hidden_dim]
-        backward_last = out[:, 0, self.hidden_dim:]
+        forward_last = out[:, -1, : self.hidden_dim]
+        backward_last = out[:, 0, self.hidden_dim :]
         last_step_out = torch.cat((forward_last, backward_last), dim=1)
         return self.fc(last_step_out)
 
@@ -460,13 +459,13 @@ def main():
         input_dim, hidden_dim, output_dim, learning_rate=learning_rate
     )
 
-    # TEST 1: Numerical Gradient Check (Section 2 Requirement)
+    # TEST 1: Numerical Gradient Check
     print("\n" + "=" * 60)
     print("TEST 1: NUMERICAL GRADIENT CHECK FOR NUMPY RNN")
     print("=" * 60)
     check_gradient_numerical(numpy_model, X_train[:2], y_train[:2])
 
-    # TEST 2: Sanity Check with PyTorch nn.RNN (Section 3 Requirement)
+    # TEST 2: Sanity Check with PyTorch nn.RNN
     print("\n" + "=" * 60)
     print("TEST 2: NUMPY vs PYTORCH")
     print("=" * 60)
@@ -504,7 +503,7 @@ def main():
         model_name="PyTorch BiLSTM",
     )
 
-    # GRU training and testing (Bonus)
+    # GRU training and testing
     gru_model = PyTorchGRU(input_dim, hidden_dim, output_dim)
     time_gru, acc_gru, f1_gru = train_pytorch_model(
         gru_model,
